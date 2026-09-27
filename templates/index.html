@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ciphership</title>
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="hud">
+        <span class="wordmark">Ciphership</span><span class="chip chip-cyan">MATCH {{ match_id }}</span>
+    </header>
+    <h2>Enter your Team Name</h2>
+    <input type="text" id="teamName" placeholder="Team Name">
+    <h2>Enter your cipher string</h2>
+    <div class="cipher-container">
+        <input type="text" id="box1" class="cipher-box" maxlength="1" oninput="focusNext(this, 'box2')" placeholder="a">
+        <input type="text" id="box2" class="cipher-box" maxlength="1" oninput="focusNext(this, 'box3')" placeholder="b">
+        <input type="text" id="box3" class="cipher-box" maxlength="1" oninput="focusNext(this, 'box4')" placeholder="c">
+        <input type="text" id="box4" class="cipher-box" maxlength="1" oninput="focusNext(this, 'box5')" placeholder="d">
+        <input type="text" id="box5" class="cipher-box" maxlength="1" placeholder="e">
+    </div>
+    <p class="cipher-hint">Your cipher is a permutation of a&ndash;e — it relabels the feed, not your board.</p>
+    <button id="submit-info">Submit Team Info</button>
+    <p id="info"></p>
+    <script>
+        const MATCH_ID = {{ match_id | tojson }};
+        const MATCH_LABEL = {{ match_label | tojson }};
+        document.getElementById('info').innerText = MATCH_LABEL
+            ? 'Match: ' + MATCH_LABEL : '';
+
+        // Auto-rejoin: check if we have a saved UUID for this match
+        const STORAGE_KEY = 'ciphership_uuid_' + MATCH_ID;
+        const savedUUID = localStorage.getItem(STORAGE_KEY);
+        if (savedUUID) {
+            document.getElementById('info').innerText = 'Rejoining...';
+            window.location.href = '/play/' + savedUUID;
+        }
+
+        function focusNext(current, nextId) {
+            if (current.value.length === 1) {
+                document.getElementById(nextId)?.focus();
+            }
+        }
+        function sendCipher() {
+            let cipher = '';
+            for (let i = 1; i <= 5; i++) {
+                const value = document.getElementById(`box${i}`).value;
+                if (!value) {
+                    alert('Please fill all boxes.');
+                    return;
+                }
+                cipher += value;
+            }
+            return cipher
+        }
+        document.getElementById("submit-info").addEventListener("click", async () => {
+            const teamname = document.getElementById("teamName").value; // Get team name
+            const cipher = sendCipher()
+            if (!cipher) return;
+
+            const normalizedCipher = cipher.toLowerCase();
+
+            const ourstring = "abcde";
+            const userstring = normalizedCipher.split('').sort().join('');
+            
+            if (normalizedCipher.length != 5 || userstring != ourstring) {
+                document.getElementById("info").innerText = "Enter a valid cipher, e.g., aecbd or abedc";
+                return;
+            }
+
+            document.getElementById("info").innerText = "Valid cipher!";
+
+
+            const data = {
+                teamName: teamname,
+                cipher: normalizedCipher,
+                matchId: MATCH_ID
+            };
+
+            try {
+                // Send data to server using fetch API
+                const response = await fetch('/submit-team-info', { // Replace with your server endpoint
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data)
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log('Server Response:', result);
+                    // Save UUID for auto-rejoin
+                    localStorage.setItem(STORAGE_KEY, result.teamUUID);
+                    window.location.href = '/play/' + result.teamUUID
+                } else {
+                    const err = await response.json().catch(() => ({}));
+                    document.getElementById("info").innerText = err.message || 'Failed to submit team info';
+                    console.error('Failed to submit team info:', response.statusText);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ciphership — Organizer</title>
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="hud">
+        <span class="wordmark">Ciphership</span><span class="chip">tournament desk</span>
+    </header>
+    <h1>Ciphership — Tournament Desk</h1>
+    <div id="auth">
+        <h2>Organizer unlock</h2>
+        <input type="password" id="password" placeholder="Admin password"
+               onkeydown="if (event.key === 'Enter') unlock();">
+        <button id="unlock-btn" onclick="unlock()">Unlock desk</button>
+        <span id="authinfo"></span>
+    </div>
+    <div id="desk">
+        <p>Create a match for every pairing, then hand each team its join link.
+           Finished results are saved to <code>tournament_results.jsonl</code>.</p>
+        <div>
+            <input type="text" id="label" placeholder="Label, e.g. R1: Alpha vs Beta" maxlength="40">
+            <input type="number" id="duration" placeholder="Duration (min)" min="1" max="180" value="12" style="width: 120px;">
+            <input type="number" id="maxRounds" placeholder="Max rounds" min="1" max="200" value="20" style="width: 120px;">
+            <button id="create">Create Match</button>
+            <span id="info"></span>
+        </div>
+        <table>
+            <thead>
+                <tr><th>Match</th><th>Status</th><th>Teams</th><th>Score</th><th>Round</th><th>Time Left</th><th>Join link</th><th></th></tr>
+            </thead>
+            <tbody id="rows"></tbody>
+        </table>
+    </div>
+    <script>
+        function adminPassword() { return sessionStorage.getItem('adminPassword') || ''; }
+
+        function apiFetch(path, options) {
+            options = options || {};
+            options.headers = Object.assign({}, options.headers,
+                                            { 'Authorization': 'Bearer ' + adminPassword() });
+            return fetch(path, options).then(function (resp) {
+                if (resp.status === 401 || resp.status === 503) {
+                    sessionStorage.removeItem('adminPassword');
+                    showAuth('Password invalid — enter the organizer password again.');
+                }
+                return resp;
+            });
+        }
+
+        function showAuth(message) {
+            document.getElementById('desk').style.display = 'none';
+            document.getElementById('auth').style.display = 'block';
+            if (message) document.getElementById('authinfo').textContent = message;
+        }
+
+        async function unlock() {
+            const password = document.getElementById('password').value.trim();
+            if (!password) return;
+            sessionStorage.setItem('adminPassword', password);
+            try {
+                const resp = await apiFetch('/matches');
+                if (resp.ok) {
+                    document.getElementById('auth').style.display = 'none';
+                    document.getElementById('desk').style.display = 'block';
+                    refresh();
+                } else {
+                    showAuth('Wrong password — try again.');
+                }
+            } catch (e) {
+                showAuth('Cannot reach the server.');
+            }
+        }
+
+        function cell(text) {
+            const td = document.createElement('td');
+            td.textContent = text;
+            return td;
+        }
+
+        async function refresh() {
+            let data;
+            try {
+                const resp = await apiFetch('/matches');
+                if (!resp.ok) return;
+                data = await resp.json();
+            } catch (e) { return; }
+
+            const rows = document.getElementById('rows');
+            rows.textContent = '';
+            data.forEach(m => {
+                const tr = document.createElement('tr');
+                tr.appendChild(cell(m.label || m.matchId));
+                tr.appendChild(cell(m.status));
+                tr.appendChild(cell(m.teams.length ? m.teams.join(' vs ') : '— waiting for teams —'));
+                tr.appendChild(cell(m.status === 'waiting' ? '' : m.points.join(' : ')));
+                tr.appendChild(cell(`${m.round}/${m.maxRounds}`));
+                
+                // Timer column
+                const timerCell = document.createElement('td');
+                if (m.status === 'playing' && m.ends_at) {
+                    timerCell.textContent = '--:--';
+                    timerCell.style.fontVariantNumeric = 'tabular-nums';
+                    timerCell.style.color = 'var(--cyan)';
+                    timerCell.dataset.endsAt = m.ends_at;
+                } else {
+                    timerCell.textContent = '—';
+                }
+                tr.appendChild(timerCell);
+                
+                const link = document.createElement('td');
+                if (m.status !== 'finished') {
+                    const a = document.createElement('a');
+                    a.href = m.joinUrl;
+                    a.textContent = m.joinUrl;
+                    link.appendChild(a);
+                }
+                tr.appendChild(link);
+                const action = document.createElement('td');
+                const btn = document.createElement('button');
+                btn.textContent = 'Close';
+                btn.addEventListener('click', async () => {
+                    await apiFetch('/close-match/' + m.matchId, { method: 'POST' });
+                    refresh();
+                });
+                action.appendChild(btn);
+                tr.appendChild(action);
+                rows.appendChild(tr);
+            });
+            
+            // Start/update countdown timers for playing matches
+            startAdminTimers(data);
+        }
+
+        document.getElementById('create').addEventListener('click', async () => {
+            const info = document.getElementById('info');
+            try {
+                const duration = parseInt(document.getElementById('duration').value, 10);
+                const maxRounds = parseInt(document.getElementById('maxRounds').value, 10);
+                if (isNaN(duration) || duration <= 0) {
+                    info.textContent = 'Duration must be a positive number';
+                    return;
+                }
+                if (isNaN(maxRounds) || maxRounds <= 0) {
+                    info.textContent = 'Max rounds must be a positive number';
+                    return;
+                }
+                const resp = await apiFetch('/create-match', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        label: document.getElementById('label').value,
+                        duration_minutes: duration,
+                        max_rounds: maxRounds
+                    })
+                });
+                const result = await resp.json();
+                info.textContent = resp.ok
+                    ? 'Match created — share the join link with both teams'
+                    : (result.message || 'Failed to create match');
+            } catch (e) {
+                info.textContent = 'Failed to create match';
+            }
+            refresh();
+        });
+
+        let adminTimeOffset = 0;  // server_time - local_time (ms)
+        
+        function startAdminTimers(matches) {
+            // Calculate time offset from first match with server_time
+            if (adminTimeOffset === 0) {
+                const matchWithTime = matches.find(m => m.server_time);
+                if (matchWithTime) {
+                    const serverMs = new Date(matchWithTime.server_time).getTime();
+                    const localMs = Date.now();
+                    adminTimeOffset = serverMs - localMs;
+                    console.log('[Admin Timer] Time offset calculated:', adminTimeOffset, 'ms');
+                }
+            }
+            
+            document.querySelectorAll('#rows td[data-ends-at]').forEach(td => {
+                const endsAt = td.dataset.endsAt;
+                if (!td.timerInterval) {
+                    td.timerInterval = setInterval(() => updateAdminTimer(td, endsAt), 1000);
+                    updateAdminTimer(td, endsAt);
+                }
+            });
+        }
+        
+        function updateAdminTimer(td, endsAt) {
+            const endTime = new Date(endsAt).getTime();
+            const now = Date.now() + adminTimeOffset;  // Use synchronized time
+            let remaining = Math.max(0, endTime - now);
+            
+            if (remaining <= 0) {
+                td.textContent = '00:00';
+                td.style.color = 'var(--red)';
+                if (td.timerInterval) clearInterval(td.timerInterval);
+                return;
+            }
+            
+            const minutes = Math.floor(remaining / 60000);
+            const seconds = Math.floor((remaining % 60000) / 1000);
+            td.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            
+            if (remaining <= 60000) {
+                td.style.color = 'var(--red)';
+            } else if (remaining <= 300000) {
+                td.style.color = 'var(--amber)';
+            } else {
+                td.style.color = 'var(--cyan)';
+            }
+        }
+        
+        setInterval(refresh, 2000);
+        if (adminPassword()) {
+            unlock();  // validate the stored password, then show the desk
+        } else {
+            showAuth('');
+        }
+    </script>
+</body>
+</html>

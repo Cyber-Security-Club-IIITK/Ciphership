@@ -1,0 +1,5 @@
+{
+  "name": "CIPHERSHIP",
+  "description": "A strategic naval combat game with a cryptographic twist. Players must protect their fleet while deciphering the opponent's secret coordinate encryption system.",
+  "requestFramePermissions": []
+}

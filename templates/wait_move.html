@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ciphership</title>
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="hud pulse-waiting">
+        <span class="wordmark">Ciphership</span><span class="chip">waiting</span>
+        <span class="live">live</span>
+    </header>
+    <div class="render-area">
+        <div class="play-title">
+            <h2 id="score"></h2>
+            <h2>Waiting for opponent...</h2>
+            <h2 id="cipher"></h2>
+            <h2 id="timer" class="timer-display">--:--</h2>
+        </div>
+        <div class="play-area">
+            <div>
+                <div id="user-grid" class="grid"></div>
+                <div><h3>Your Fleet</h3></div>
+            </div>
+            <div>
+                <div id="opponent-grid" class="grid"></div>
+                <div><h3>Opponent Fleet</h3></div>
+            </div>
+            <div id="chat-container" class="hidden">
+                <h2>Public Chat</h2>
+                <div id="messages"></div>
+            </div>
+        </div>
+    </div>
+    <script>
+        let GRID_SIZE = 6
+        let UUID = window.location.href.split('/').filter(Boolean).pop()
+        let wowstring = "abcde "
+        const STORAGE_KEY = 'ciphership_uuid_' + UUID;   
+        function createGrid(gridElement, isClickable) {
+            for (let i = 0; i < GRID_SIZE; i++) {
+                for (let j = 0; j < GRID_SIZE; j++) {
+                    const cell = document.createElement("div");
+                    cell.className = "cell";
+                    cell.dataset.x = i;
+                    cell.dataset.y = j;
+
+                    // Allow user to toggle ship placement
+                    if (isClickable && i!=(GRID_SIZE-1) && j!=(GRID_SIZE-1)) {
+                        cell.addEventListener("click", () => {
+                            cell.classList.toggle("selected"); // Toggle ship color
+                        });
+                    }
+                    else if(i==(GRID_SIZE-1))
+                    {
+                        cell.innerText = wowstring[j];
+                    }
+                    else if(j==(GRID_SIZE-1))
+                    {
+                        cell.innerText = wowstring[i];
+                    }
+
+                    gridElement.appendChild(cell);
+                }
+            }
+        }
+
+        async function fetchMessages() {
+            try {
+                const response = await fetch('/get-all-messages/' + UUID);
+                if (!response.ok) throw new Error('Failed to fetch messages');
+                const data = await response.json();
+
+                const messagesContainer = document.getElementById('messages');
+                if(data.length == messagesContainer.childElementCount) {
+                    return;
+                }
+                messagesContainer.innerHTML = ''; // Clear old messages
+                
+                data.forEach((msg,index) => {
+                    const div = document.createElement('div');
+                    div.className = 'message';
+                    const user = document.createElement('span');
+                    user.className = msg.username === 'Admiral' ? 'username admiral' : 'username';
+                    user.textContent = msg.username + ': ';
+                    const text = document.createElement('span');
+                    text.className = 'text';
+                    const hit = /^(?:Attacked|Defended) on ([a-e]{2})$/.exec(msg.text);
+                    if (hit) {
+                        text.textContent = msg.text.slice(0, -2);
+                        const coord = document.createElement('span');
+                        coord.className = 'coord';
+                        coord.textContent = hit[1];
+                        text.appendChild(coord);
+                    } else {
+                        text.textContent = msg.text;
+                    }
+                    div.appendChild(user);
+                    div.appendChild(text);
+                    messagesContainer.appendChild(div);
+                    if (index == data.length - 1 && msg.text == "Next Move") {
+                        location.reload();
+                    }
+                });
+
+                // Auto-scroll to the bottom
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            } catch (error) {
+                console.error('Error fetching messages:', error);
+            }
+        }
+
+        let timerInterval = null;
+        let timeOffset = 0;  // server_time - local_time (ms)
+
+        function updateTimerDisplay(endsAt) {
+            const timerEl = document.getElementById('timer');
+            if (!timerEl || !endsAt) {
+                timerEl.textContent = '--:--';
+                return;
+            }
+            const endTime = new Date(endsAt).getTime();
+            const now = Date.now() + timeOffset;  // Use synchronized time
+            let remaining = Math.max(0, endTime - now);
+            
+            if (remaining <= 0) {
+                timerEl.textContent = '00:00';
+                timerEl.style.color = 'var(--red)';
+                if (timerInterval) clearInterval(timerInterval);
+                // Timer hit zero - force reload to show win/lose/draw screen
+                localStorage.removeItem(STORAGE_KEY);
+                window.location.reload();
+                return;
+            }
+            
+            const minutes = Math.floor(remaining / 60000);
+            const seconds = Math.floor((remaining % 60000) / 1000);
+            timerEl.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            
+            // Change color when time is running low
+            if (remaining <= 60000) { // less than 1 minute
+                timerEl.style.color = 'var(--red)';
+            } else if (remaining <= 300000) { // less than 5 minutes
+                timerEl.style.color = 'var(--amber)';
+            } else {
+                timerEl.style.color = 'var(--cyan)';
+            }
+        }
+
+        function startTimerCountdown(endsAt, serverTime) {
+            if (timerInterval) clearInterval(timerInterval);
+            // Calculate time offset on first call (server_time - local_time)
+            if (serverTime && timeOffset === 0) {
+                const serverMs = new Date(serverTime).getTime();
+                const localMs = Date.now();
+                timeOffset = serverMs - localMs;
+                console.log('[Timer] Time offset calculated:', timeOffset, 'ms');
+            }
+            updateTimerDisplay(endsAt);
+            timerInterval = setInterval(() => updateTimerDisplay(endsAt), 1000);
+        }
+
+        async function fetchData() {
+            try {
+                const response = await fetch('/get-tables/' + UUID);
+                if (!response.ok) throw new Error('Failed to fetch messages');
+                data = await response.json();
+                console.log(data)
+                const user_grid = document.getElementById("user-grid")
+                const opponent_grid = document.getElementById("opponent-grid")
+                data.table_data[0].forEach(msg => {
+                     updateCell(user_grid, msg.x, msg.y, msg.color)
+                });
+                data.table_data[1].forEach(msg => {
+                     updateCell(opponent_grid, msg.x, msg.y, msg.color)
+                });
+                document.getElementById("score").innerHTML = `Score: ${data.score}`
+                document.getElementById("cipher").innerHTML = `Encryption(abcde): ${data.cipher}`
+                
+                // Start/Update timer countdown
+                if (data.ends_at) {
+                    startTimerCountdown(data.ends_at, data.server_time);
+                }
+                
+                // Check if match has ended
+                if (data.match_status === 'finished') {
+                    if (timerInterval) clearInterval(timerInterval);
+                    localStorage.removeItem(STORAGE_KEY);
+                    window.location.reload();
+                }
+            } catch (error) {
+                console.error('Error fetching messages:', error);
+            }
+        }
+
+        function updateCell(gridElement, x, y, className) {
+            const cell = gridElement.querySelector(`.cell[data-x="${x}"][data-y="${y}"]`);
+            if (cell) {
+                cell.classList.add(className); // Add a class to update the cell
+            } else {
+                console.error(`Cell at (${x}, ${y}) not found.`);
+            }
+        }
+        // Instantiation
+        const user_grid = document.getElementById("user-grid");
+        const opponent_grid = document.getElementById("opponent-grid");
+        createGrid(user_grid, false);
+        createGrid(opponent_grid, false);
+        document.getElementById("chat-container").classList.remove("hidden");
+        setInterval(fetchMessages, 1000);
+        setInterval(fetchData, 3000);  // Poll for match status changes (timeout, round end, etc.)
+        fetchData()
+        
+    </script>
+</body>
+</html>
